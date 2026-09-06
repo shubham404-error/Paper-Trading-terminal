@@ -176,9 +176,25 @@ class PaperEngine:
                 "all_orders": all_orders,
             }
 
-    def _check_margin(self, quantity: int, price: float) -> str | None:
-        margin_req = (quantity * price) / MARGIN_MULTIPLIER
-        free_margin = self.state().get("free_margin", 0.0)
+    def _check_margin(self, symbol: str, side: str, quantity: int, price: float, quotes: dict[str, float]) -> str | None:
+        with self._connect() as conn:
+            pos = conn.execute("SELECT quantity FROM positions WHERE symbol = ?", (symbol,)).fetchone()
+            old_qty = int(pos["quantity"]) if pos else 0
+
+        side_sign = 1 if side == "BUY" else -1
+        delta = side_sign * quantity
+        
+        if old_qty * delta < 0:
+            close_qty = min(abs(old_qty), abs(delta))
+            open_qty = abs(delta) - close_qty
+            margin_req = (open_qty * price) / MARGIN_MULTIPLIER
+        else:
+            margin_req = (quantity * price) / MARGIN_MULTIPLIER
+
+        if margin_req == 0:
+            return None
+            
+        free_margin = self.state(quotes).get("free_margin", 0.0)
         if free_margin < margin_req:
             return f"Insufficient margin. Required: {margin_req:.2f}, Available: {free_margin:.2f}"
         return None
@@ -195,6 +211,7 @@ class PaperEngine:
         stop_price: float | None = None,
         stop_loss: float | None = None,
         take_profit: float | None = None,
+        quotes: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         """Place a new paper trading order."""
         symbol = symbol.strip().upper()
@@ -216,7 +233,8 @@ class PaperEngine:
         order_id = str(uuid.uuid4())
         stamp = now_iso()
 
-        margin_error = self._check_margin(quantity, float(current_price))
+        quotes_map = quotes or {symbol: float(current_price)}
+        margin_error = self._check_margin(symbol, side, quantity, float(current_price), quotes_map)
         if margin_error:
             log.warning("Order %s rejected: %s", order_id, margin_error)
             with self._connect() as conn:

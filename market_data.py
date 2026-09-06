@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import requests
 import threading
 from datetime import datetime, timedelta
 
@@ -92,6 +93,9 @@ _KNOWN_INSTRUMENT_KEYS: dict[str, str] = {
     "NESTLEIND": "NSE_EQ|INE239A01016",
     "TITAN": "NSE_EQ|INE280A01028",
 }
+
+# Cache for F&O instrument details: symbol -> dict(instrument_key, expiry_date, lot_size)
+_FUTURES_CACHE: dict[str, dict] = {}
 
 # Upstox interval names mapped from user-friendly labels.
 _UPSTOX_INTERVALS: dict[str, str] = {
@@ -243,10 +247,80 @@ def _get_upstox_client() -> UpstoxClient | None:
         return None
 
 
+def _fetch_instrument_key(symbol: str) -> str | None:
+    client = _get_upstox_client()
+    if not client:
+        return None
+    url = "https://api.upstox.com/v2/instrument/search"
+    headers = {
+        "Authorization": f"Bearer {client.access_token}",
+        "Accept": "application/json"
+    }
+    try:
+        resp = requests.get(url, headers=headers, params={"query": symbol}, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            for item in data:
+                if item.get("trading_symbol") == symbol and item.get("segment") == "NSE_EQ":
+                    return item.get("instrument_key")
+    except Exception as exc:
+        log.warning("Instrument search failed for %s: %s", symbol, exc)
+    return None
+
 def _instrument_key(symbol: str) -> str | None:
     """Resolve a human symbol name to an Upstox instrument key."""
-    return _KNOWN_INSTRUMENT_KEYS.get(symbol.upper())
+    symbol = symbol.upper()
+    if symbol in _KNOWN_INSTRUMENT_KEYS:
+        return _KNOWN_INSTRUMENT_KEYS[symbol]
+    
+    ikey = _fetch_instrument_key(symbol)
+    if ikey:
+        _KNOWN_INSTRUMENT_KEYS[symbol] = ikey
+        SYMBOLS[symbol] = symbol
+        return ikey
+    return None
 
+
+def get_futures_info(symbol: str) -> dict | None:
+    """Fetch nearest futures contract info (instrument_key, expiry, lot_size)."""
+    symbol = symbol.upper()
+    if symbol in _FUTURES_CACHE:
+        return _FUTURES_CACHE[symbol]
+        
+    client = _get_upstox_client()
+    if not client:
+        return None
+        
+    url = "https://api.upstox.com/v1/instruments/search"
+    headers = {
+        "Authorization": f"Bearer {client.access_token}",
+        "Accept": "application/json"
+    }
+    params = {
+        "exchange": "NSE",
+        "segment": "FO",
+        "instrument_types": "FUT",
+        "query": symbol,
+        "expiry": "current_month",
+        "limit": 30
+    }
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            for item in data:
+                # Upstox FO symbols format: RELIANCE24OCTFUT etc. We ensure it starts with symbol.
+                if item.get("trading_symbol", "").startswith(symbol) and item.get("instrument_type") == "FUT":
+                    info = {
+                        "instrument_key": item.get("instrument_key"),
+                        "expiry_date": item.get("expiry"),
+                        "lot_size": int(item.get("lot_size", 1))
+                    }
+                    _FUTURES_CACHE[symbol] = info
+                    return info
+    except Exception as exc:
+        log.warning("Futures search failed for %s: %s", symbol, exc)
+    return None
 
 # ── Data loaders ─────────────────────────────────────────────────────────
 def _load_upstox(
@@ -384,6 +458,93 @@ def get_live_ltp(symbol: str) -> float | None:
     except Exception as exc:
         log.warning("LTP fetch failed for %s: %s", symbol, exc)
         return None
+
+
+def get_multiple_live_ltp(symbols: list[str]) -> dict[str, float]:
+    """Fetch live prices for multiple symbols, utilizing the cache and batch API."""
+    result = {}
+    missing_ikeys = []
+    symbol_by_ikey = {}
+    
+    for sym in symbols:
+        ikey = _instrument_key(sym)
+        if ikey:
+            cached = _ltp_cache.get(ikey)
+            if cached is not None:
+                result[sym] = cached
+            else:
+                missing_ikeys.append(ikey)
+                symbol_by_ikey[ikey] = sym
+                
+    if missing_ikeys:
+        client = _get_upstox_client()
+        if client is not None:
+            try:
+                # get_ltp can handle up to 500
+                prices = client.get_ltp(missing_ikeys)
+                for ikey, price in prices.items():
+                    if price is not None:
+                        _ltp_cache.update(ikey, price)
+                        result[symbol_by_ikey[ikey]] = price
+            except Exception as exc:
+                log.warning("Batch LTP fetch failed: %s", exc)
+                
+    return result
+
+
+def get_arbitrage_snapshot(symbols: list[str]) -> list[dict]:
+    """Fetch batch spot and futures prices, assembling inputs for arbitrage engine."""
+    snapshot = []
+    keys_to_fetch = []
+    key_to_symbol_leg = {}
+    
+    for sym in symbols:
+        # Spot leg
+        spot_ikey = _instrument_key(sym)
+        if spot_ikey:
+            keys_to_fetch.append(spot_ikey)
+            key_to_symbol_leg[spot_ikey] = (sym, "SPOT")
+        
+        # Futures leg
+        fut_info = get_futures_info(sym)
+        if fut_info and fut_info.get("instrument_key"):
+            keys_to_fetch.append(fut_info["instrument_key"])
+            key_to_symbol_leg[fut_info["instrument_key"]] = (sym, "FUT")
+            
+    if not keys_to_fetch:
+        return []
+        
+    prices = {}
+    client = _get_upstox_client()
+    if client:
+        try:
+            # Batch fetch up to 500
+            prices = client.get_ltp(keys_to_fetch)
+        except Exception as exc:
+            log.warning("Batch LTP fetch failed in scanner: %s", exc)
+            
+    data_by_sym = {}
+    for sym in symbols:
+        data_by_sym[sym] = {"symbol": sym, "is_liquid": True}
+        
+    for ikey, price in prices.items():
+        sym, leg = key_to_symbol_leg.get(ikey, (None, None))
+        if not sym: continue
+        
+        if leg == "SPOT":
+            data_by_sym[sym]["spot_price"] = price
+        elif leg == "FUT":
+            data_by_sym[sym]["future_price"] = price
+            
+    for sym, data in data_by_sym.items():
+        if "spot_price" in data and "future_price" in data:
+            fut_info = _FUTURES_CACHE.get(sym)
+            if fut_info:
+                data["expiry_date"] = fut_info["expiry_date"]
+                data["lot_size"] = fut_info["lot_size"]
+                snapshot.append(data)
+                
+    return snapshot
 
 
 def is_upstox_connected() -> bool:

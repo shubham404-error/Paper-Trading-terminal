@@ -18,15 +18,7 @@ from paper_engine import INITIAL_CASH, MARGIN_MULTIPLIER, PaperEngine
 
 
 st.set_page_config(page_title="CapitalSense Paper Desk", page_icon="📈", layout="wide")
-st.markdown(
-    """
-    <style>
-    .block-container {max-width: 1500px; padding-top: 1.2rem;}
-    [data-testid="stMetricValue"] {font-size: 1.35rem;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+
 
 
 @st.cache_resource
@@ -62,9 +54,11 @@ with st.sidebar:
 
     search = st.text_input("Search symbol", placeholder="RELIANCE, TCS…").strip().upper()
     matches = [s for s in SYMBOLS if not search or search in s or search in SYMBOLS[s].upper()]
+    if search and not matches:
+        matches = [search]
     if not matches:
         matches = list(SYMBOLS)
-    symbol = st.selectbox("Instrument", matches, format_func=lambda x: f"{x} · {SYMBOLS[x]}")
+    symbol = st.selectbox("Instrument", matches, format_func=lambda x: f"{x} · {SYMBOLS.get(x, 'Custom')}")
 
     # Interval selector
     intervals = available_intervals()
@@ -95,8 +89,19 @@ live_ltp = get_live_ltp(symbol)
 if live_ltp is not None:
     latest_price = live_ltp
 
+from market_data import get_multiple_live_ltp
+
+# Fetch initial state to discover open positions
+initial_state = engine.state()
+active_symbols = list(set([p["Symbol"] for p in initial_state["positions"]] + [symbol]))
+
+# Fetch live quotes for all active symbols
+quotes_map = get_multiple_live_ltp(active_symbols)
+quotes_map[symbol] = latest_price
+
+# Update engine with the current quote and get true state
 engine.process_quote(symbol, latest_price)
-state = engine.state({symbol: latest_price})
+state = engine.state(quotes_map)
 
 # ── Metrics row ──────────────────────────────────────────────────────────
 nav_delta = state["nav"] - INITIAL_CASH
@@ -104,24 +109,30 @@ unrealised = state["unrealised_pnl"]
 realised = state["realised_pnl"]
 
 metric_cols = st.columns(6)
-metric_cols[0].metric(
-    "Net Asset Value",
-    money(state["nav"]),
-    delta=f"{pct(nav_delta, INITIAL_CASH)}",
-)
-metric_cols[1].metric("Available Cash", money(state["free_margin"]))
-metric_cols[2].metric("Allocated Margin", money(state["used_margin"]))
-metric_cols[3].metric(
-    "Unrealized P&L",
-    money(unrealised),
-    delta=f"{pct(unrealised, INITIAL_CASH)}",
-)
-metric_cols[4].metric(
-    "Realized P&L",
-    money(realised),
-    delta=f"{pct(realised, INITIAL_CASH)}",
-)
-metric_cols[5].metric("LTP", money(latest_price))
+with metric_cols[0].container(border=True):
+    st.metric(
+        "Net Asset Value",
+        money(state["nav"]),
+        delta=f"{pct(nav_delta, INITIAL_CASH)}",
+    )
+with metric_cols[1].container(border=True):
+    st.metric("Available Cash", money(state["free_margin"]))
+with metric_cols[2].container(border=True):
+    st.metric("Allocated Margin", money(state["used_margin"]))
+with metric_cols[3].container(border=True):
+    st.metric(
+        "Unrealized P&L",
+        money(unrealised),
+        delta=f"{pct(unrealised, INITIAL_CASH)}",
+    )
+with metric_cols[4].container(border=True):
+    st.metric(
+        "Realized P&L",
+        money(realised),
+        delta=f"{pct(realised, INITIAL_CASH)}",
+    )
+with metric_cols[5].container(border=True):
+    st.metric("LTP", money(latest_price))
 
 # ── Chart + Order Ticket ─────────────────────────────────────────────────
 chart_col, ticket_col = st.columns([2.25, 1], gap="large")
@@ -208,10 +219,20 @@ with ticket_col:
 
         # Margin preview
         notional = float(quantity) * latest_price
-        margin_required = notional / MARGIN_MULTIPLIER
+        pos_qty = next((p["Quantity"] for p in state["positions"] if p["Symbol"] == symbol), 0)
+        side_sign = 1 if side == "BUY" else -1
+        delta = side_sign * int(quantity)
+        
+        if pos_qty * delta < 0:
+            close_qty = min(abs(pos_qty), abs(delta))
+            open_qty = abs(delta) - close_qty
+            margin_required = (open_qty * latest_price) / MARGIN_MULTIPLIER
+        else:
+            margin_required = notional / MARGIN_MULTIPLIER
+
         st.write(f"Estimated notional: {money(notional)}")
         st.write(f"Margin required: {money(margin_required)}")
-        if margin_required > state["free_margin"]:
+        if margin_required > state["free_margin"] and margin_required > 0:
             st.warning(f"⚠️ Exceeds available margin ({money(state['free_margin'])})")
 
         submitted = st.form_submit_button(f"{side} {int(quantity)} {symbol}", use_container_width=True, type="primary")
@@ -227,6 +248,7 @@ with ticket_col:
                     stop_price=stop_price,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
+                    quotes=quotes_map,
                 )
                 if result["status"] == "REJECTED":
                     st.error(f"Order rejected: {result.get('reject_reason', 'Insufficient margin')}")
@@ -240,11 +262,12 @@ with ticket_col:
 st.divider()
 
 all_orders = state.get("all_orders", [])
-positions_tab, orders_tab, fills_tab, history_tab = st.tabs([
+positions_tab, orders_tab, fills_tab, history_tab, scanner_tab = st.tabs([
     f"Positions ({len(state['positions'])})",
     f"Pending Orders ({len(state['open_orders'])})",
     f"Fills History ({len(state['fills'])})",
     f"Order History ({len(all_orders)})",
+    "Arbitrage Scanner ⚡"
 ])
 
 with positions_tab:
@@ -295,5 +318,62 @@ with history_tab:
         })
     else:
         st.info("No order history. Orders will appear here once placed.")
+
+with scanner_tab:
+    st.subheader("F&O Cash-and-Carry Arbitrage Scanner")
+    st.caption("Identify mispriced spot-futures spreads. **Watch-only mode.**")
+    
+    from arbitrage_engine import BROKERS, compute, rank_opportunities
+    from market_data import get_arbitrage_snapshot
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        broker_name = st.selectbox("Select Broker Config", list(BROKERS.keys()))
+        funding_rate = st.number_input("Margin Funding Cost (Annual %)", min_value=0.0, max_value=25.0, value=12.0, step=1.0) / 100.0
+    
+    if st.button("Run Scanner", type="primary", use_container_width=True):
+        with st.spinner("Fetching live futures and spot prices..."):
+            snapshot = get_arbitrage_snapshot(list(SYMBOLS.keys()))
+            
+            ops = []
+            for item in snapshot:
+                try:
+                    days_to_expiry = max(1, (pd.to_datetime(item["expiry_date"]).date() - pd.Timestamp.now().date()).days)
+                    op = compute(
+                        symbol=item["symbol"],
+                        spot_price=item["spot_price"],
+                        future_price=item["future_price"],
+                        expiry_date=item["expiry_date"],
+                        days_to_expiry=days_to_expiry,
+                        lot_size=item["lot_size"],
+                        broker_name=broker_name,
+                        funding_rate_annual=funding_rate,
+                        expected_dividends=0.0,
+                        slippage_bps=5.0,
+                        is_liquid=item["is_liquid"],
+                        borrow_available=False
+                    )
+                    ops.append(op)
+                except Exception as exc:
+                    st.error(f"Failed to process {item['symbol']}: {exc}")
+                    
+            ranked_ops = rank_opportunities(ops)
+            
+            if ranked_ops:
+                st.success(f"Found {len(ranked_ops)} active opportunities.")
+                for op in ranked_ops:
+                    with st.container(border=True):
+                        st.markdown(f"**{op.symbol}** (Exp: {op.expiry_date} • {op.days_to_expiry} days) | Lot Size: {op.lot_size} | **{op.classification}**")
+                        
+                        cols = st.columns(5)
+                        cols[0].metric("Spot", money(op.spot_price))
+                        cols[1].metric("Future", money(op.future_price))
+                        cols[2].metric("Gross Spread", money(op.raw_premium * op.lot_size))
+                        cols[3].metric("Est. Total Cost", money(op.total_cost_absolute))
+                        cols[4].metric("Net Ann. Return", f"{op.net_annualized_return * 100:.2f}%")
+            else:
+                st.info("No actionable arbitrage opportunities found above edge thresholds.")
+                
+            st.warning("⚠️ **Dividends assumed to be zero.** Fair value is understated for dividend-paying underlyings near an ex-date.")
 
 st.caption("Research and education tool. Not a broker, not investment advice, and not a SEBI-registered intermediary.")
