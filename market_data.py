@@ -235,7 +235,21 @@ def _get_upstox_client() -> UpstoxClient | None:
         return _upstox_client
     if upstox_client is None:
         return None  # SDK not installed
-    token = os.environ.get("UPSTOX_ACCESS_TOKEN", "").strip()
+        
+    token = ""
+    # 1. Try Streamlit Secrets (for Streamlit Cloud)
+    try:
+        import streamlit as st
+        token = st.secrets.get("UPSTOX_ACCESS_TOKEN", "")
+    except Exception:
+        pass
+        
+    # 2. Fallback to local environment variables
+    if not token:
+        token = os.environ.get("UPSTOX_ACCESS_TOKEN", "")
+        
+    token = token.strip()
+    
     if not token or token == "your_analytics_token_here":
         return None
     try:
