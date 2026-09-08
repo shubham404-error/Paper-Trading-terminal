@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from market_data import (
     SYMBOLS,
@@ -19,6 +21,41 @@ from paper_engine import INITIAL_CASH, MARGIN_MULTIPLIER, PaperEngine
 
 st.set_page_config(page_title="CapitalSense Paper Desk", page_icon="📈", layout="wide")
 
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+@import url('https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&display=swap');
+html, body, [class*="css"]  {
+    font-family: 'Inter', sans-serif !important;
+}
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Clash Display', sans-serif !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+def get_dvm_context(symbol: str) -> dict | None:
+    db_path = Path("data/capitalsense_dvm.sqlite")
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM dvm_scores WHERE symbol = ?", (symbol,)).fetchone()
+            if row:
+                return dict(row)
+    except Exception:
+        pass
+    return None
+
+# Auto-seed mock data for DVM Context
+_db_path = Path("data/capitalsense_dvm.sqlite")
+_db_path.parent.mkdir(exist_ok=True)
+with sqlite3.connect(_db_path) as _conn:
+    _conn.execute('CREATE TABLE IF NOT EXISTS dvm_scores (symbol TEXT PRIMARY KEY, score TEXT, swot_1 TEXT, swot_2 TEXT)')
+    _conn.execute('INSERT OR IGNORE INTO dvm_scores VALUES (?, ?, ?, ?)', ('RELIANCE', 'CapitalSense DVM: 78/100', 'Strong Momentum, but Valuation is historically expensive.', 'High institutional holding indicates stability.'))
+    _conn.execute('INSERT OR IGNORE INTO dvm_scores VALUES (?, ?, ?, ?)', ('TCS', 'CapitalSense DVM: 85/100', 'Excellent cash flow generation.', 'Growth metrics slightly below historical averages.'))
 
 
 @st.cache_resource
@@ -135,9 +172,10 @@ with metric_cols[5].container(border=True):
     st.metric("LTP", money(latest_price))
 
 # ── Chart + Order Ticket ─────────────────────────────────────────────────
-chart_col, ticket_col = st.columns([2.25, 1], gap="large")
+chart_col, ticket_col = st.columns([7, 3], gap="large")
 
-with chart_col:
+@st.fragment
+def render_chart(symbol: str, frame: pd.DataFrame, interval: str, source: str):
     st.subheader(f"{symbol} · {SYMBOLS.get(symbol, symbol)}")
     st.caption(f"{source} · {len(frame):,} bars · interval: {interval} · paper fills use the displayed Level-1 mark")
     chart_controls = st.columns(8)
@@ -195,9 +233,32 @@ with chart_col:
         macd_fig.add_trace(go.Bar(x=macd_frame.index, y=macd_frame["MACD_Hist"], name="Histogram", marker_color=colors, opacity=0.5))
         macd_fig.update_layout(height=180, margin=dict(l=10, r=10, t=5, b=5))
         st.plotly_chart(macd_fig, use_container_width=True, config={"displaylogo": False})
+        
+    # Phase 3: Trendlyne Consensus Sandbox
+    with st.expander("External Consensus (Trendlyne)"):
+        components.html("""
+        <div style="text-align: center; font-family: sans-serif; padding: 20px; border: 1px solid #444; border-radius: 8px; color: #fff; background-color: #1e1e1e;">
+            <h3 style="margin-top:0; font-family: 'Clash Display', sans-serif;">Trendlyne Consensus</h3>
+            <p>Placeholder for Trendlyne Widget integration.</p>
+        </div>
+        """, height=120)
+        st.caption("CapitalSense does not factor external widgets into its proprietary scoring.")
+
+with chart_col:
+    render_chart(symbol, frame, interval, source)
 
 # ── Order Ticket ─────────────────────────────────────────────────────────
 with ticket_col:
+    # Phase 2: Trade Context Integration
+    dvm_context = get_dvm_context(symbol)
+    with st.container(border=True):
+        if dvm_context:
+            st.markdown(f"**{dvm_context['score']}**")
+            st.markdown(f"- {dvm_context['swot_1']}")
+            st.markdown(f"- {dvm_context['swot_2']}")
+        else:
+            st.markdown("*No fundamental data available*")
+            
     st.subheader("Order Ticket")
     st.caption("Orders are simulated against the latest displayed quote.")
     with st.form("order_ticket"):
@@ -230,8 +291,10 @@ with ticket_col:
         else:
             margin_required = notional / MARGIN_MULTIPLIER
 
-        st.write(f"Estimated notional: {money(notional)}")
-        st.write(f"Margin required: {money(margin_required)}")
+        # Phase 1: Margin Calculator Text
+        st.markdown(f"**Margin Required:** {money(margin_required)}")
+        avail_color = '#00cc00' if state['free_margin'] >= margin_required else '#ff4444'
+        st.markdown(f"**Available Cash:** <span style='color: {avail_color}'>{money(state['free_margin'])}</span>", unsafe_allow_html=True)
         if margin_required > state["free_margin"] and margin_required > 0:
             st.warning(f"⚠️ Exceeds available margin ({money(state['free_margin'])})")
 
@@ -278,7 +341,15 @@ with positions_tab:
             avg = p.get("Avg Entry", 0)
             p["P&L %"] = f"{((p.get('Unrealized P&L', 0)) / (avg * p.get('Quantity', 1)) * 100):+.2f}%" if avg and p.get("Quantity") else "—"
         positions = pd.DataFrame(pos_data)
-        st.dataframe(positions, use_container_width=True, hide_index=True, column_config={
+        
+        def color_pnl(val):
+            if pd.isna(val): return ''
+            color = '#00cc00' if val > 0 else '#ff4444' if val < 0 else 'gray'
+            return f'color: {color}'
+            
+        styled_positions = positions.style.map(color_pnl, subset=['Unrealized P&L'])
+        
+        st.dataframe(styled_positions, use_container_width=True, hide_index=True, column_config={
             "Avg Entry": st.column_config.NumberColumn(format="₹%.2f"),
             "LTP": st.column_config.NumberColumn(format="₹%.2f"),
             "Unrealized P&L": st.column_config.NumberColumn(format="₹%.2f"),
@@ -373,6 +444,25 @@ with scanner_tab:
                         cols[4].metric("Net Ann. Return", f"{op.net_annualized_return * 100:.2f}%")
             else:
                 st.info("No actionable arbitrage opportunities found above edge thresholds.")
+                
+            with st.expander("View All Scanned Pairs (Raw Engine Output)"):
+                if not ops:
+                    st.error("Zero pairs were processed. This means the Upstox API did not return any spot or futures data. Please double-check your API token.")
+                else:
+                    st.write("Here is the exact math for every pair scanned. Most will correctly show as 'NO EDGE' because the strict delivery taxes (STT) and transaction costs consume the gross spread.")
+                    debug_data = []
+                    for o in sorted(ops, key=lambda x: x.net_annualized_return, reverse=True):
+                        debug_data.append({
+                            "Symbol": o.symbol,
+                            "Spot": money(o.spot_price),
+                            "Future": money(o.future_price),
+                            "Spread": money(o.raw_premium * o.lot_size),
+                            "Total Costs": money(o.total_cost_absolute),
+                            "Net Return": money(o.net_return_absolute),
+                            "Ann. Return %": f"{o.net_annualized_return * 100:.2f}%",
+                            "Classification": o.classification
+                        })
+                    st.dataframe(debug_data, use_container_width=True)
                 
             st.warning("⚠️ **Dividends assumed to be zero.** Fair value is understated for dividend-paying underlyings near an ex-date.")
 
