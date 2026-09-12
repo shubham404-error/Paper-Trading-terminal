@@ -472,24 +472,58 @@ def main_page():
     
 
 def guide_page():
-    st.title("User Guide: Paper Desk")
-    st.markdown("""
-    Welcome to the CapitalSense Paper Desk. This is a risk-free environment to test your trading strategies with live market data, without routing real money to a broker.
+    st.title("CapitalSense Paper Desk Guide")
+    st.caption("A comprehensive guide to using the risk-free trading and arbitrage simulator.")
     
-    ### ?? Intended Outputs
-    - **Live Execution:** Simulated order fills for market and limit orders based on real-time order book data (via Upstox) or delayed Yahoo Finance data.
-    - **Trade Context:** The CapitalSense Scorecard appears before you execute, giving you a fundamental reality check on the asset's Quality, Valuation, and Trend.
-    - **Portfolio Ledger:** A real-time P&L tracking table showing your active positions and historical execution log.
+    st.markdown("---")
     
-    ### ?? Required Inputs
-    - **Instrument Search:** Use the sidebar to search for and select the asset you wish to trade.
-    - **Order Ticket:** Located on the right side of the screen. Enter the quantity, select Buy/Sell, and choose between Market or Limit order types.
-    - **Reset Account:** If you blow up your simulated account, you can reset it using the button in the sidebar (this wipes all local order history).
+    st.markdown("### Welcome to the Simulator")
+    st.markdown(
+        "The CapitalSense Paper Desk provides a **risk-free environment** to backtest strategies, "
+        "execute simulated trades with live market data, and discover structural F&O mispricings."
+    )
     
-    ### ?? Best Practices
-    - Never place a purely technical trade without checking the **CapitalSense Context Card** right above the buy button. If the score is low, reconsider your edge.
-    - Use the **Trendlyne Consensus** expander below the chart to see if external analysts agree with your directional bias.
-    """)
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2, gap="large")
+    
+    with col1:
+        with st.container(border=True):
+            st.markdown("#### 🎯 Core Capabilities")
+            st.markdown("""
+            - **Live Execution Engine:** Simulated fills for Market, Limit, and Bracket orders using real-time Upstox data.
+            - **Proprietary Trade Context:** Pre-trade CapitalSense fundamental reality checks (Quality, Valuation, Trend).
+            - **F&O Arbitrage Scanner:** Identify strict, fully cost-loaded cash-and-carry mispricings.
+            """)
+            
+        with st.container(border=True):
+            st.markdown("#### ⚙️ Navigation & Inputs")
+            st.markdown("""
+            - **Instrument Search (Sidebar):** Search for and load the asset you wish to trade.
+            - **Order Ticket (Right Panel):** Configure trade sizing, direction, and advanced stops/limits.
+            - **Portfolio Ledger (Bottom):** Real-time mark-to-market P&L and historical order log.
+            """)
+            
+    with col2:
+        with st.container(border=True):
+            st.markdown("#### 💡 Trading Best Practices")
+            st.info("**1. Check the Context Card**\n\nNever execute a purely technical trade without validating the asset's underlying fundamentals in the Order Ticket context card.")
+            st.warning("**2. Margin Requirements**\n\nEnsure you have sufficient free margin before deploying bracket orders, as they simulate real-world capital lockups.")
+            st.success("**3. Trendlyne Consensus**\n\nCross-reference your directional bias using the external analyst consensus expander below the chart.")
+            
+    st.markdown("---")
+    
+    with st.expander("❓ Frequently Asked Questions", expanded=False):
+        st.markdown("""
+        **Q: How do I reset my account?**  
+        A: Use the **Reset Account** button in the sidebar. *Warning: This permanently deletes all local paper trading history.*
+        
+        **Q: Why does the Arbitrage Scanner say 'No Edge'?**  
+        A: Real-world F&O arbitrage is highly competitive. Our scanner factors in fully-loaded statutory costs (like 0.1% Equity Delivery STT). If the net return is below a risk-free 6% threshold, it is classified as *No Edge*.
+        
+        **Q: Where is my data saved?**  
+        A: All paper trades are stored locally in a SQLite database. No real money is routed to any broker.
+        """)
 
 pages = {
     "Start": [
