@@ -79,7 +79,7 @@ def pct(value: float, base: float) -> str:
 def main_page():
     engine = get_engine()
     st.title("CapitalSense Paper Desk")
-    st.caption("MAET-inspired research and paper-execution workstation · no broker routing · no real money")
+    st.caption("Research and paper-execution workstation · no broker routing · no real money")
     
     # ── Sidebar ──────────────────────────────────────────────────────────────
     with st.sidebar:
@@ -147,31 +147,17 @@ def main_page():
     unrealised = state["unrealised_pnl"]
     realised = state["realised_pnl"]
     
-    metric_cols = st.columns(6)
+    metric_cols = st.columns(5)
     with metric_cols[0].container(border=True):
-        st.metric(
-            "Net Asset Value",
-            money(state["nav"]),
-            delta=f"{pct(nav_delta, INITIAL_CASH)}",
-        )
+        st.metric("NAV", money(state["nav"]), delta=f"{pct(nav_delta, INITIAL_CASH)}")
     with metric_cols[1].container(border=True):
         st.metric("Available Cash", money(state["free_margin"]))
     with metric_cols[2].container(border=True):
-        st.metric("Allocated Margin", money(state["used_margin"]))
+        st.metric("Used Margin", money(state["used_margin"]))
     with metric_cols[3].container(border=True):
-        st.metric(
-            "Unrealized P&L",
-            money(unrealised),
-            delta=f"{pct(unrealised, INITIAL_CASH)}",
-        )
+        st.metric("Unrealized", money(unrealised), delta=f"{pct(unrealised, INITIAL_CASH)}")
     with metric_cols[4].container(border=True):
-        st.metric(
-            "Realized P&L",
-            money(realised),
-            delta=f"{pct(realised, INITIAL_CASH)}",
-        )
-    with metric_cols[5].container(border=True):
-        st.metric("LTP", money(latest_price))
+        st.metric("Realized", money(realised), delta=f"{pct(realised, INITIAL_CASH)}")
     
     # ── Chart + Order Ticket ─────────────────────────────────────────────────
     chart_col, ticket_col = st.columns([7, 3], gap="large")
