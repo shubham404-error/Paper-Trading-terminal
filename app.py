@@ -475,7 +475,7 @@ def guide_page():
     
     with col1:
         with st.container(border=True):
-            st.markdown("#### 🎯 Core Capabilities")
+            st.markdown("#### ⚙️ Core Capabilities")
             st.markdown("""
             - **Live Execution Engine:** Simulated fills for Market, Limit, and Bracket orders using real-time Upstox data.
             - **Proprietary Trade Context:** Pre-trade CapitalSense fundamental reality checks (Quality, Valuation, Trend).
@@ -483,7 +483,7 @@ def guide_page():
             """)
             
         with st.container(border=True):
-            st.markdown("#### ⚙️ Navigation & Inputs")
+            st.markdown("#### 🧭 Navigation & Inputs")
             st.markdown("""
             - **Instrument Search (Sidebar):** Search for and load the asset you wish to trade.
             - **Order Ticket (Right Panel):** Configure trade sizing, direction, and advanced stops/limits.
