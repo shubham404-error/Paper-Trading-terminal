@@ -36,7 +36,7 @@ h1, h2, h3, h4, h5, h6 {
 
 
 def get_dvm_context(symbol: str) -> dict | None:
-    db_path = Path("data/capitalsense_dvm.sqlite")
+    db_path = Path(__file__).resolve().parent / "data" / "capitalsense_dvm.sqlite"
     if not db_path.exists():
         return None
     try:
@@ -50,7 +50,7 @@ def get_dvm_context(symbol: str) -> dict | None:
     return None
 
 # Auto-seed mock data for DVM Context
-_db_path = Path("data/capitalsense_dvm.sqlite")
+_db_path = Path(__file__).resolve().parent / "data" / "capitalsense_dvm.sqlite"
 _db_path.parent.mkdir(exist_ok=True)
 with sqlite3.connect(_db_path) as _conn:
     _conn.execute('CREATE TABLE IF NOT EXISTS dvm_scores (symbol TEXT PRIMARY KEY, score TEXT, swot_1 TEXT, swot_2 TEXT)')

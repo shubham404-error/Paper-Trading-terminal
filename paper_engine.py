@@ -127,6 +127,9 @@ class PaperEngine:
         for position in conn.execute("SELECT * FROM positions").fetchall():
             mark = float(quotes.get(position["symbol"], position["avg_entry"]))
             total += abs(int(position["quantity"]) * mark) / MARGIN_MULTIPLIER
+        for order in conn.execute("SELECT * FROM orders WHERE status IN ('PENDING', 'TRIGGER_PENDING')").fetchall():
+            price = float(order["limit_price"]) if order["limit_price"] else float(quotes.get(order["symbol"], 0))
+            total += abs(int(order["quantity"]) * price) / MARGIN_MULTIPLIER
         return total
 
     def state(self, quotes: dict[str, float] | None = None) -> dict[str, Any]:
@@ -305,8 +308,18 @@ class PaperEngine:
                 elif order["order_type"] == "STOP_LOSS_LIMIT":
                     eligible = self._stop_triggered(order["side"], price, float(order["stop_price"])) and self._limit_is_marketable(order["side"], price, float(order["limit_price"]))
                 if eligible:
-                    self._fill_order(conn, order["id"], price, reduce_only=False)
-                    filled.append(order["id"])
+                    # Re-verify margin availability
+                    # We subtract this order's pending margin so we don't double-count it during the check
+                    account = self._account(conn)
+                    used = self._used_margin(conn, {symbol: price})
+                    pending_req = (abs(int(order["quantity"])) * price) / MARGIN_MULTIPLIER
+                    free = account["equity"] - (used - pending_req)
+                    
+                    if free < pending_req:
+                        conn.execute("UPDATE orders SET status = 'CANCELLED_INSUFFICIENT_MARGIN', updated_at = ? WHERE id = ?", (now_iso(), order["id"]))
+                    else:
+                        self._fill_order(conn, order["id"], price, reduce_only=False)
+                        filled.append(order["id"])
 
             position = conn.execute("SELECT * FROM positions WHERE symbol = ?", (symbol,)).fetchone()
             if position:
