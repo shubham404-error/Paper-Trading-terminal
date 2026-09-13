@@ -60,7 +60,7 @@ with sqlite3.connect(_db_path) as _conn:
 
 @st.cache_resource
 def get_engine() -> PaperEngine:
-    return PaperEngine(Path(__file__).with_name("paper_trading.sqlite3"))
+    return PaperEngine(Path(__file__).resolve().with_name("paper_trading.sqlite3"))
 
 
 def money(value: float) -> str:

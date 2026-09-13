@@ -311,12 +311,19 @@ class PaperEngine:
                     # Re-verify margin availability
                     # We subtract this order's pending margin so we don't double-count it during the check
                     account = self._account(conn)
+                    unrealised = 0.0
+                    for row in conn.execute("SELECT * FROM positions").fetchall():
+                        mark = price if row["symbol"] == symbol else float(row["avg_entry"])
+                        unrealised += self._position_pnl(row, mark)
+                        
+                    equity = float(account["initial_cash"]) + float(account["realised_pnl"]) + unrealised
+                    
                     used = self._used_margin(conn, {symbol: price})
                     pending_req = (abs(int(order["quantity"])) * price) / MARGIN_MULTIPLIER
-                    free = account["equity"] - (used - pending_req)
+                    free = equity - (used - pending_req)
                     
                     if free < pending_req:
-                        conn.execute("UPDATE orders SET status = 'CANCELLED_INSUFFICIENT_MARGIN', updated_at = ? WHERE id = ?", (now_iso(), order["id"]))
+                        conn.execute("UPDATE orders SET status = 'CANCELLED_INSUFFICIENT_MARGIN' WHERE id = ?", (order["id"],))
                     else:
                         self._fill_order(conn, order["id"], price, reduce_only=False)
                         filled.append(order["id"])
@@ -417,9 +424,17 @@ class PaperEngine:
             )
         else:
             conn.execute("DELETE FROM positions WHERE symbol = ?", (order["symbol"],))
+            
+            # Use original position's stop loss and take profit if the new order doesn't explicitly override them
+            sl = order["stop_loss"]
+            tp = order["take_profit"]
+            if position:
+                if sl is None: sl = position["stop_loss"]
+                if tp is None: tp = position["take_profit"]
+                
             conn.execute(
                 """INSERT INTO positions
                 (symbol, quantity, avg_entry, stop_loss, take_profit, trail_anchor, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (order["symbol"], new_qty, new_avg, order["stop_loss"], order["take_profit"], price, stamp),
+                (order["symbol"], new_qty, new_avg, sl, tp, price, stamp),
             )
