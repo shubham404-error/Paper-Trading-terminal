@@ -119,7 +119,13 @@ def main_page():
     
     
     # ── Data loading ─────────────────────────────────────────────────────────
-    frame, source = load_data(symbol, interval=interval)
+    # Inject canonical system time here at the boundary to ensure the entire
+    # underlying engine operates deterministically for backtesting.
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    as_of_session = datetime.now(ist)
+    
+    frame, source = load_data(symbol, as_of=as_of_session, interval=interval)
     frame = indicators(frame)
     latest_price = float(frame["Close"].iloc[-1])
     
@@ -397,7 +403,7 @@ def main_page():
                 ops = []
                 for item in snapshot:
                     try:
-                        days_to_expiry = max(1, (pd.to_datetime(item["expiry_date"]).date() - get_market_session_date()).days)
+                        days_to_expiry = max(1, (pd.to_datetime(item["expiry_date"]).date() - get_market_session_date(as_of_session)).days)
                         op = compute(
                             symbol=item["symbol"],
                             spot_price=item["spot_price"],

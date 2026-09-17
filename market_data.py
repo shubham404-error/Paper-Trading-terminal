@@ -22,21 +22,14 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 
-def get_market_session_date(as_of: datetime = None) -> datetime.date:
-    """Returns the canonical market session date in IST (UTC+5:30).
-    This replaces system-time dependence for deterministic backtesting and execution.
+def get_market_session_date(as_of: datetime) -> datetime.date:
+    """Returns the canonical market session date.
+    Replaces system-time dependence for deterministic backtesting.
     """
-    if as_of is None:
-        ist = timezone(timedelta(hours=5, minutes=30))
-        as_of = datetime.now(ist)
     return as_of.date()
 
-def is_market_open(as_of: datetime = None) -> bool:
-    """Checks if the NSE market is currently open based on IST timezone."""
-    if as_of is None:
-        ist = timezone(timedelta(hours=5, minutes=30))
-        as_of = datetime.now(ist)
-    
+def is_market_open(as_of: datetime) -> bool:
+    """Checks if the NSE market is currently open based on the provided IST datetime."""
     # Weekends (Saturday=5, Sunday=6)
     if as_of.weekday() >= 5:
         return False
@@ -161,6 +154,7 @@ class UpstoxClient:
     def get_historical_candles(
         self,
         instrument_key: str,
+        as_of: datetime,
         interval: str = "day",
         to_date: str | None = None,
         from_date: str | None = None,
@@ -172,10 +166,10 @@ class UpstoxClient:
         """
         api = upstox_client.HistoryApi(self._api_client)
         if to_date is None:
-            to_date = datetime.now().strftime("%Y-%m-%d")
+            to_date = as_of.strftime("%Y-%m-%d")
         if from_date is None:
             max_days = _INTERVAL_MAX_DAYS.get(interval, 365)
-            from_date = (datetime.now() - timedelta(days=max_days)).strftime("%Y-%m-%d")
+            from_date = (as_of - timedelta(days=max_days)).strftime("%Y-%m-%d")
 
         resp = api.get_historical_candle_data(
             instrument_key=instrument_key,
@@ -363,7 +357,7 @@ def get_futures_info(symbol: str) -> dict | None:
 
 # ── Data loaders ─────────────────────────────────────────────────────────
 def _load_upstox(
-    symbol: str, interval: str = "1D"
+    symbol: str, as_of: datetime, interval: str = "1D"
 ) -> tuple[pd.DataFrame, str] | None:
     """Try fetching candle data from Upstox.  Returns None on failure."""
     client = _get_upstox_client()
@@ -375,7 +369,7 @@ def _load_upstox(
         return None
     upstox_interval = _UPSTOX_INTERVALS.get(interval, "day")
     try:
-        df = client.get_historical_candles(ikey, interval=upstox_interval)
+        df = client.get_historical_candles(ikey, as_of=as_of, interval=upstox_interval)
         if df.empty:
             return None
         # Also refresh the LTP cache with the latest close.
@@ -412,11 +406,11 @@ def _load_yfinance(
     return None
 
 
-def _demo_data(symbol: str, days: int = 180) -> pd.DataFrame:
+def _demo_data(symbol: str, as_of: datetime, days: int = 180) -> pd.DataFrame:
     """Generate deterministic synthetic OHLCV data for offline/demo use."""
     seed = int(hashlib.sha256(symbol.encode()).hexdigest()[:8], 16)
     rng = np.random.default_rng(seed)
-    dates = pd.bdate_range(end=datetime.now().date(), periods=days)
+    dates = pd.bdate_range(end=as_of.date(), periods=days)
     base = 600 + (seed % 700)
     returns = rng.normal(0.0004, 0.018, size=len(dates))
     close = base * np.exp(np.cumsum(returns))
@@ -432,6 +426,7 @@ def _demo_data(symbol: str, days: int = 180) -> pd.DataFrame:
 
 def load_data(
     symbol: str,
+    as_of: datetime,
     interval: str = "1D",
     period: str = "6mo",
 ) -> tuple[pd.DataFrame, str]:
@@ -443,6 +438,8 @@ def load_data(
     ----------
     symbol:
         NSE equity symbol, e.g. ``"RELIANCE"``.
+    as_of:
+        The canonical evaluation datetime.
     interval:
         Chart interval label: ``"1m"``, ``"5m"``, ``"15m"``, ``"30m"``,
         ``"1h"``, ``"1D"``, ``"1W"``, ``"1M"``.
@@ -454,7 +451,7 @@ def load_data(
     tuple of (DataFrame, source_label).
     """
     # 1. Upstox
-    result = _load_upstox(symbol, interval)
+    result = _load_upstox(symbol, as_of, interval)
     if result is not None:
         return result
 
@@ -467,7 +464,7 @@ def load_data(
             return result
 
     # 3. Demo
-    return _demo_data(symbol), "🔴 Demo data (offline)"
+    return _demo_data(symbol, as_of), "🔴 Demo data (offline)"
 
 
 def get_live_ltp(symbol: str) -> float | None:
