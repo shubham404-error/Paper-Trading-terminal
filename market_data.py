@@ -20,6 +20,31 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta, timezone
+
+def get_market_session_date(as_of: datetime = None) -> datetime.date:
+    """Returns the canonical market session date in IST (UTC+5:30).
+    This replaces system-time dependence for deterministic backtesting and execution.
+    """
+    if as_of is None:
+        ist = timezone(timedelta(hours=5, minutes=30))
+        as_of = datetime.now(ist)
+    return as_of.date()
+
+def is_market_open(as_of: datetime = None) -> bool:
+    """Checks if the NSE market is currently open based on IST timezone."""
+    if as_of is None:
+        ist = timezone(timedelta(hours=5, minutes=30))
+        as_of = datetime.now(ist)
+    
+    # Weekends (Saturday=5, Sunday=6)
+    if as_of.weekday() >= 5:
+        return False
+        
+    market_open = as_of.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = as_of.replace(hour=15, minute=30, second=0, microsecond=0)
+    
+    return market_open <= as_of <= market_close
 
 try:
     from dotenv import load_dotenv

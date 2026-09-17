@@ -383,7 +383,7 @@ def main_page():
         st.caption("Identify mispriced spot-futures spreads. **Watch-only mode.**")
         
         from arbitrage_engine import BROKERS, compute, rank_opportunities
-        from market_data import get_arbitrage_snapshot
+        from market_data import get_arbitrage_snapshot, get_market_session_date
         
         col1, col2 = st.columns([1, 2])
         with col1:
@@ -397,7 +397,7 @@ def main_page():
                 ops = []
                 for item in snapshot:
                     try:
-                        days_to_expiry = max(1, (pd.to_datetime(item["expiry_date"]).date() - pd.Timestamp.now().date()).days)
+                        days_to_expiry = max(1, (pd.to_datetime(item["expiry_date"]).date() - get_market_session_date()).days)
                         op = compute(
                             symbol=item["symbol"],
                             spot_price=item["spot_price"],
